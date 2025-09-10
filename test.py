@@ -46,7 +46,7 @@ class Iff(Node):
     right: Node
 
 # ============================================================
-# Tokenizer + Parser (same DSL as earlier)
+# Tokenizer + Parser
 # ============================================================
 TOKEN_SPEC = [
     ("ARROW",    r"->"),
@@ -453,14 +453,13 @@ def generate_puzzle_with_layers(
     all_clues = [goal_node]
     seen_texts = {goal_node.text}
     evidences: List[EvidenceNode] = []
-    used_direct_subjects = set()
+    used_direct_subjects = set()    # track subjects used in direct clues to avoid duplicates
 
     # Distribute target number of clue nodes across layers 1..max_depth
     # We'll create roughly num_clues nodes excluding goal
     target_nodes = max(1, num_clues)
     # allocate by a simple distribution: more nodes in middle layers
     layer_counts = [0] * (max_depth + 1)
-    remaining = target_nodes
     # ensure at least one node in the farthest layer if possible (gives early-game content)
     for d in range(1, max_depth + 1):
         # weight for d (farther layers get slightly more)
@@ -470,7 +469,8 @@ def generate_puzzle_with_layers(
     total_w = sum(layer_counts[1:])
     for d in range(1, max_depth + 1):
         layer_counts[d] = max(1, int(round((layer_counts[d] / total_w) * target_nodes)))
-    # adjust to exact target
+
+    # adjust to exact target (messy but it works lol)
     cur_sum = sum(layer_counts[1:])
     while cur_sum > target_nodes:
         # remove from largest non-empty layer
@@ -486,7 +486,7 @@ def generate_puzzle_with_layers(
         cur_sum += 1
 
     # We'll generate layer by layer, outermost first (farthest from goal), because player sees far ones first
-    # But connections must point toward closer layers (smaller layer numbers)
+    # Connections must point toward closer layers (smaller layer numbers)
     layers: Dict[int, List[ClueNode]] = {d: [] for d in range(max_depth + 1)}   # start with empty list per layer (0..max_depth)
     layers[0] = [goal_node] # goal at layer 0
 
@@ -503,6 +503,7 @@ def generate_puzzle_with_layers(
 
             # attempt candidate formulas until valid
             for _try in range(120):
+                break_loop = False
                 ast_candidate = make_formula_of_type(ctype, npcs, use_liars)
                 text = ast_to_str(ast_candidate)
 
@@ -525,7 +526,12 @@ def generate_puzzle_with_layers(
                 if ctype == ClueType.DIRECT:                    
                     for npc in subj:  # should be only one npc in direct clues
                         if npc in used_direct_subjects:
-                            continue  # skip duplicate direct clue
+                            break_loop = True
+                            break  # skip duplicate direct clue
+                    
+                    if break_loop:
+                        continue    # restart outer loop
+
                     used_direct_subjects.add(npc)
                     node = ClueNode(ast=ast_candidate, text=text, layer=d, subject=subj, reference=ref)
                 else:
@@ -560,6 +566,7 @@ def generate_puzzle_with_layers(
                 layers[d].append(node)
                 all_clues.append(node)
                 seen_texts.add(fb_text)
+            print(f"[Debug] Fallback clue at layer {d}: {fb_text}")
 
     # Add optional merging: randomly rewire some nodes to point to non-immediate parents to make multiple chains merge.
     for node in [n for d in range(1, max_depth + 1) for n in layers[d]]:
@@ -589,7 +596,8 @@ def generate_puzzle_with_layers(
         noise_attempts += 1
         d = random.randint(1, max_depth)  # put noise at some layer
         ctype = choose_clue_type(d, max_depth)
-        for _ in range(120):
+        for _try in range(120):
+            break_loop = False
             ast_candidate = make_formula_of_type(ctype, npcs, use_liars)
             text = ast_to_str(ast_candidate)
             if text in seen_texts:
@@ -600,7 +608,23 @@ def generate_puzzle_with_layers(
                 continue
             if is_contradiction_over_traitor_choices(ast_candidate, npcs, liar_map):
                 continue
-            node = ClueNode(ast=ast_candidate, text=text, layer=d)
+
+            subj, ref = extract_subject_reference(ast_candidate)
+            # if chosen type is DIRECT, ensure no duplicate subjects
+            if ctype == ClueType.DIRECT:                    
+                for npc in subj:  # should be only one npc in direct clues
+                    if npc in used_direct_subjects:
+                        break_loop = True
+                        break  # skip duplicate direct clue
+
+                if break_loop:
+                    continue    # mark subject as used and restart outer loop
+
+                used_direct_subjects.add(npc)
+                node = ClueNode(ast=ast_candidate, text=text, layer=d, subject=subj, reference=ref)
+            else:
+                node = ClueNode(ast=ast_candidate, text=text, layer=d, subject=subj, reference=ref)
+
             # connect to a random closer node
             parent_pool = []
             for pd in range(0, d):
@@ -620,13 +644,13 @@ def generate_puzzle_with_layers(
     random.shuffle(all_clues)
 
     return {    # return dict of results => will be a class in C# conversion
-        "traitor": traitor, # str of traitor npc
+        "traitor": traitor, # str(name) of traitor npc
         "liars": liar_map,  # dict of npc -> bool
         "goal": goal_node,  # ClueNode of goal
-        "clues": all_clues, # list of all ClueNode
-        "layers": layers,   # dict of layer_num -> list of ClueNode
+        "clues": all_clues, # list of all ClueNode (used for iteration)
+        "layers": layers,   # dict of layer_num -> list of ClueNode (used for searching by layer)
         "evidences": evidences, # list of all EvidenceNode
-        "noise": noise_nodes,   # list of noise ClueNode
+        "noise": noise_nodes,   # list of noise ClueNode (used for finding noise quickly)
     }
 
 # ============================================================
