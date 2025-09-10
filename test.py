@@ -525,6 +525,9 @@ def generate_puzzle_with_layers(
                 # if chosen type is DIRECT, ensure no duplicate subjects
                 if ctype == ClueType.DIRECT:                    
                     for npc in subj:  # should be only one npc in direct clues
+                        if npc == traitor:
+                            break_loop = True
+                            break  # skip direct clue that spoils traitor
                         if npc in used_direct_subjects:
                             break_loop = True
                             break  # skip duplicate direct clue
@@ -610,9 +613,12 @@ def generate_puzzle_with_layers(
                 continue
 
             subj, ref = extract_subject_reference(ast_candidate)
-            # if chosen type is DIRECT, ensure no duplicate subjects
+            # if chosen type is DIRECT, ensure no duplicate subjects & no spoiler for traitor
             if ctype == ClueType.DIRECT:                    
                 for npc in subj:  # should be only one npc in direct clues
+                    if npc == traitor:
+                        break_loop = True
+                        break  # skip direct clue that spoils traitor
                     if npc in used_direct_subjects:
                         break_loop = True
                         break  # skip duplicate direct clue
@@ -625,6 +631,7 @@ def generate_puzzle_with_layers(
             else:
                 node = ClueNode(ast=ast_candidate, text=text, layer=d, subject=subj, reference=ref)
 
+            print(f"[Debug] Created noise clue at layer {d}: {text} (type={ctype.name}, subj={subj}, ref={ref})")
             # connect to a random closer node
             parent_pool = []
             for pd in range(0, d):
