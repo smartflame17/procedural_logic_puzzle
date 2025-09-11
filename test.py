@@ -467,8 +467,9 @@ def generate_puzzle_with_layers(
         layer_counts[d] = w
     # normalize to integer counts
     total_w = sum(layer_counts[1:])
-    for d in range(1, max_depth + 1):
-        layer_counts[d] = max(1, int(round((layer_counts[d] / total_w) * target_nodes)))
+    if total_w > 0:
+        for d in range(1, max_depth + 1):
+            layer_counts[d] = max(1, int(round((layer_counts[d] / total_w) * target_nodes)))
 
     # adjust to exact target (messy but it works lol)
     cur_sum = sum(layer_counts[1:])
@@ -485,105 +486,97 @@ def generate_puzzle_with_layers(
         layer_counts[idx] += 1
         cur_sum += 1
 
-    # We'll generate layer by layer, outermost first (farthest from goal), because player sees far ones first
-    # Connections must point toward closer layers (smaller layer numbers)
-    layers: Dict[int, List[ClueNode]] = {d: [] for d in range(max_depth + 1)}   # start with empty list per layer (0..max_depth)
-    layers[0] = [goal_node] # goal at layer 0
+    # We'll generate layer by layer, from goal outwards
+    layers: Dict[int, List[ClueNode]] = {d: [] for d in range(max_depth + 1)}
+    layers[0] = [goal_node]
+    
+    children_count: Dict[int, int] = {goal_node.id: 0}
 
-    # Pre-seed chains: make sure there are num_chains independent roots in the farthest layers
-    # We'll generate nodes per layer and connect each new node to a random node in the previous (closer) layer.
-    for d in range(max_depth, 0, -1):  # start from farthest layer up to 1
-        want = layer_counts[d]  # how many nodes to create at this layer
+
+    # Generate from layer 1 to max_depth
+    for d in range(1, max_depth + 1):
+        want = layer_counts[d]
         created = 0
         attempts = 0
         while created < want and attempts < want * 30:
             attempts += 1
-            # choose type biased by distance
             ctype = choose_clue_type(d, max_depth)
 
-            # attempt candidate formulas until valid
             for _try in range(120):
                 break_loop = False
                 ast_candidate = make_formula_of_type(ctype, npcs, use_liars)
                 text = ast_to_str(ast_candidate)
 
-                # uniqueness
                 if text in seen_texts:
                     continue
-                # must be true under the real world
                 if not is_true_under_world(ast_candidate, traitor, liar_map):
                     continue
-                # should not be trivially true/false across all traitor choices
                 if is_tautology_over_traitor_choices(ast_candidate, npcs, liar_map):
                     continue
                 if is_contradiction_over_traitor_choices(ast_candidate, npcs, liar_map):
                     continue
 
-                # good candidate
-                # extract subject and reference
                 subj, ref = extract_subject_reference(ast_candidate)
-                # if chosen type is DIRECT, ensure no duplicate subjects
-                if ctype == ClueType.DIRECT:                    
-                    for npc in subj:  # should be only one npc in direct clues
+                if ctype == ClueType.DIRECT:
+                    for npc in subj:
                         if npc == traitor:
                             break_loop = True
-                            break  # skip direct clue that spoils traitor
+                            break
                         if npc in used_direct_subjects:
                             break_loop = True
-                            break  # skip duplicate direct clue
-                    
+                            break
                     if break_loop:
-                        continue    # restart outer loop
-
+                        continue
                     used_direct_subjects.add(npc)
-                    node = ClueNode(ast=ast_candidate, text=text, layer=d, subject=subj, reference=ref)
-                else:
-                    node = ClueNode(ast=ast_candidate, text=text, layer=d, subject=subj, reference=ref)
+                
+                node = ClueNode(ast=ast_candidate, text=text, layer=d, subject=subj, reference=ref)
+                children_count[node.id] = 0
 
                 print(f"[Debug] Created clue at layer {d}: {text} (type={ctype.name}, subj={subj}, ref={ref})")
 
-                # connect to random node in closer layers (0..d-1), prefer closer (small index) //TODO: connect according to subject/reference relevance
-                possible_parents = []
-                for pd in range(0, d):
-                    possible_parents.extend(layers[pd])
-                if not possible_parents:
-                    # fallback: connect to goal
-                    node.connections.append(goal_node)
-                else:
-                    parent = random.choice(possible_parents)
-                    node.connections.append(parent)
+                # New parent selection logic
+                possible_parents = layers[d-1]
+                valid_parents = [p for p in possible_parents if p.subject and any(ref_npc in p.subject for ref_npc in node.reference)]
+
+                if not valid_parents:
+                    valid_parents = possible_parents if possible_parents else [goal_node]
+
+                weights = [1.0 / (children_count.get(p.id, 0) + 1) for p in valid_parents]
+                parent = random.choices(valid_parents, weights=weights, k=1)[0]
+                
+                node.connections.append(parent)
+                children_count[parent.id] = children_count.get(parent.id, 0) + 1
+                
                 layers[d].append(node)
                 all_clues.append(node)
                 seen_texts.add(text)
                 created += 1
                 break
 
-            # finished candidate attempts
-        # ensure at least some nodes exist at the layer; if nothing created, add a simple true literal related to traitor (fallback)
-        if created == 0:
+        if created == 0 and want > 0:
             fb = Pred("I", random.choice([x for x in npcs if x != traitor]))
             fb_text = ast_to_str(fb)
             if fb_text not in seen_texts:
                 node = ClueNode(ast=fb, text=fb_text, layer=d)
-                node.connections.append(random.choice(layers[0]))
+                parent = random.choice(layers.get(d-1) or [goal_node])
+                node.connections.append(parent)
+                children_count[parent.id] = children_count.get(parent.id, 0) + 1
                 layers[d].append(node)
                 all_clues.append(node)
                 seen_texts.add(fb_text)
-            print(f"[Debug] Fallback clue at layer {d}: {fb_text}")
+                print(f"[Debug] Fallback clue at layer {d}: {fb_text}")
 
-    # Add optional merging: randomly rewire some nodes to point to non-immediate parents to make multiple chains merge.
+    # Optional merging
     for node in [n for d in range(1, max_depth + 1) for n in layers[d]]:
         if random.random() < 0.22:
-            # pick another parent from any closer layer (0..node.layer-1)
-            cand_parents = []
-            for pd in range(0, node.layer):
-                cand_parents.extend(layers[pd])
+            cand_parents = layers.get(node.layer - 1, [])
             if cand_parents:
                 maybe = random.choice(cand_parents)
                 if maybe not in node.connections:
                     node.connections.append(maybe)
+                    children_count[maybe.id] = children_count.get(maybe.id, 0) + 1
 
-    # Attach evidences to all clues
+    # Attach evidences
     for clue in all_clues:
         need = random.randint(1, 3)
         for _ in range(need):
@@ -591,55 +584,38 @@ def generate_puzzle_with_layers(
             clue.evidences.append(ev)
             evidences.append(ev)
 
-    # Add some noise (extra true but not in chain) nodes modestly
+    # Add noise nodes
     noise_nodes = []
     noise_target = max(0, num_clues // 4)
     noise_attempts = 0
     while len(noise_nodes) < noise_target and noise_attempts < noise_target * 40:
         noise_attempts += 1
-        d = random.randint(1, max_depth)  # put noise at some layer
+        d = random.randint(1, max_depth)
         ctype = choose_clue_type(d, max_depth)
         for _try in range(120):
-            break_loop = False
             ast_candidate = make_formula_of_type(ctype, npcs, use_liars)
             text = ast_to_str(ast_candidate)
-            if text in seen_texts:
-                continue
-            if not is_true_under_world(ast_candidate, traitor, liar_map):
-                continue
-            if is_tautology_over_traitor_choices(ast_candidate, npcs, liar_map):
-                continue
-            if is_contradiction_over_traitor_choices(ast_candidate, npcs, liar_map):
-                continue
+            if text in seen_texts: continue
+            if not is_true_under_world(ast_candidate, traitor, liar_map): continue
+            if is_tautology_over_traitor_choices(ast_candidate, npcs, liar_map): continue
+            if is_contradiction_over_traitor_choices(ast_candidate, npcs, liar_map): continue
 
             subj, ref = extract_subject_reference(ast_candidate)
-            # if chosen type is DIRECT, ensure no duplicate subjects & no spoiler for traitor
-            if ctype == ClueType.DIRECT:                    
-                for npc in subj:  # should be only one npc in direct clues
-                    if npc == traitor:
-                        break_loop = True
-                        break  # skip direct clue that spoils traitor
-                    if npc in used_direct_subjects:
-                        break_loop = True
-                        break  # skip duplicate direct clue
-
-                if break_loop:
-                    continue    # mark subject as used and restart outer loop
-
-                used_direct_subjects.add(npc)
-                node = ClueNode(ast=ast_candidate, text=text, layer=d, subject=subj, reference=ref)
-            else:
-                node = ClueNode(ast=ast_candidate, text=text, layer=d, subject=subj, reference=ref)
-
-            print(f"[Debug] Created noise clue at layer {d}: {text} (type={ctype.name}, subj={subj}, ref={ref})")
-            # connect to a random closer node
-            parent_pool = []
-            for pd in range(0, d):
-                parent_pool.extend(layers[pd])
+            node = ClueNode(ast=ast_candidate, text=text, layer=d, subject=subj, reference=ref)
+            
+            # Connect noise with new logic
+            parent_pool = layers.get(d-1)
             if parent_pool:
-                node.connections.append(random.choice(parent_pool))
+                valid_parents = [p for p in parent_pool if p.subject and any(r in p.subject for r in ref)]
+                if not valid_parents: valid_parents = parent_pool
+                weights = [1.0 / (children_count.get(p.id, 0) + 1) for p in valid_parents]
+                parent = random.choices(valid_parents, weights=weights, k=1)[0]
+                node.connections.append(parent)
+                children_count[parent.id] = children_count.get(parent.id, 0) + 1
             else:
                 node.connections.append(goal_node)
+                children_count[goal_node.id] = children_count.get(goal_node.id, 0) + 1
+
             node.evidences.append(new_evidence(npcs))
             noise_nodes.append(node)
             all_clues.append(node)
@@ -647,17 +623,16 @@ def generate_puzzle_with_layers(
             layers[d].append(node)
             break
 
-    # final shuffle of all_clues for presentation randomness
     random.shuffle(all_clues)
 
-    return {    # return dict of results => will be a class in C# conversion
-        "traitor": traitor, # str(name) of traitor npc
-        "liars": liar_map,  # dict of npc -> bool
-        "goal": goal_node,  # ClueNode of goal
-        "clues": all_clues, # list of all ClueNode (used for iteration)
-        "layers": layers,   # dict of layer_num -> list of ClueNode (used for searching by layer)
-        "evidences": evidences, # list of all EvidenceNode
-        "noise": noise_nodes,   # list of noise ClueNode (used for finding noise quickly)
+    return {
+        "traitor": traitor,
+        "liars": liar_map,
+        "goal": goal_node,
+        "clues": all_clues,
+        "layers": layers,
+        "evidences": evidences,
+        "noise": noise_nodes,
     }
 
 # ============================================================
