@@ -44,6 +44,31 @@ seed: 재생성 위한 시드
 
 정답에 직접적인 도움이 안 되는 ClueNode를 3과 같은 방식으로 추가 
 
+
+
+## 예시 (시드: 1111)
+```
+./python test.py
+
+Traitor: B
+Liars: ['B']
+
+Clues (showing id, layer, text, connections, evidence count, ref and subj of the text):
+Clue#1 || layer=0 || T(B) || parent-> [] || evidences=3 || ref=['B'] || subj=['B']
+Clue#2 || layer=1 || !T(E) || parent-> ['Clue#1'] || evidences=1 || ref=['E'] || subj=['E']
+Clue#3 || layer=1 || !T(A) || parent-> ['Clue#1'] || evidences=1 || ref=['A'] || subj=['A']
+Clue#12 || layer=1 || I(A) || parent-> ['Clue#1'] || evidences=1 || ref=['A'] || subj=['A']
+Clue#4 || layer=2 || !T(D) || parent-> ['Clue#2'] || evidences=1 || ref=['D'] || subj=['D']
+Clue#5 || layer=2 || I(C) || parent-> ['Clue#3'] || evidences=3 || ref=['C'] || subj=['C']
+Clue#6 || layer=3 || I(C) & I(B) -> !T(D) || parent-> ['Clue#5'] || evidences=1 || ref=['C', 'B'] || subj=['D']
+Clue#7 || layer=3 || I(E) & I(B) -> !T(D) || parent-> ['Clue#4'] || evidences=3 || ref=['E', 'B'] || subj=['D']
+Clue#8 || layer=3 || I(C) & I(B) -> T(A) || parent-> ['Clue#5'] || evidences=2 || ref=['C', 'B'] || subj=['A']
+Clue#13 || layer=3 || I(B) -> T(A) || parent-> ['Clue#4'] || evidences=1 || ref=['B'] || subj=['A']
+Clue#9 || layer=4 || T(C) -> T(A) || parent-> ['Clue#8', 'Clue#6'] || evidences=1 || ref=['C'] || subj=['A']
+Clue#10 || layer=4 || I(B) -> !T(E) || parent-> ['Clue#7'] || evidences=2 || ref=['B'] || subj=['E']
+Clue#11 || layer=4 || T(A) -> T(E) || parent-> ['Clue#8'] || evidences=1 || ref=['A'] || subj=['E']
+```
+
 <br>  
 
 ### TODO
